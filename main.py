@@ -1,11 +1,13 @@
 from mcp.server.fastmcp import FastMCP
 from typing import List
+from openpyxl import load_workbook
 
-# In-memory mock database with 20 leave days to start
-employee_leaves = {
-    "E001": {"balance": 18, "history": ["2024-12-25", "2025-01-01"]},
-    "E002": {"balance": 20, "history": []}
-}
+EXCEL_FILE = "leaves.xlsx"
+
+
+def get_workbook():
+    return load_workbook(EXCEL_FILE)
+
 
 # Create MCP serverc
 mcp = FastMCP("LeaveManager")
@@ -13,43 +15,77 @@ mcp = FastMCP("LeaveManager")
 # Tool: Check Leave Balance
 @mcp.tool()
 def get_leave_balance(employee_id: str) -> str:
-    """Check how many leave days are left for the employee"""
-    data = employee_leaves.get(employee_id)
-    if data:
-        return f"{employee_id} has {data['balance']} leave days remaining."
+    wb = get_workbook()
+
+    sheet = wb["Employees"]
+
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        emp_id, balance = row
+
+        if emp_id == employee_id:
+            return f"{employee_id} has {balance} leave days remaining."
+
     return "Employee ID not found."
 
 # Tool: Apply for Leave with specific dates
 @mcp.tool()
-def apply_leave(employee_id: str, leave_dates: List[str]) -> str:
-    """
-    Apply leave for specific dates (e.g., ["2025-04-17", "2025-05-01"])
-    """
-    if employee_id not in employee_leaves:
-        return "Employee ID not found."
+def apply_leave(employee_id: str, leave_dates: list[str]) -> str:
+
+    wb = get_workbook()
+
+    emp_sheet = wb["Employees"]
+    history_sheet = wb["LeaveHistory"]
 
     requested_days = len(leave_dates)
-    available_balance = employee_leaves[employee_id]["balance"]
 
-    if available_balance < requested_days:
-        return f"Insufficient leave balance. You requested {requested_days} day(s) but have only {available_balance}."
+    for row in emp_sheet.iter_rows(min_row=2):
 
-    # Deduct balance and add to history
-    employee_leaves[employee_id]["balance"] -= requested_days
-    employee_leaves[employee_id]["history"].extend(leave_dates)
+        if row[0].value == employee_id:
 
-    return f"Leave applied for {requested_days} day(s). Remaining balance: {employee_leaves[employee_id]['balance']}."
+            balance = row[1].value
 
+            if balance < requested_days:
+                return (
+                    f"Insufficient leave balance. "
+                    f"Available: {balance}"
+                )
+
+            row[1].value = balance - requested_days
+
+            for leave_date in leave_dates:
+                history_sheet.append([
+                    employee_id,
+                    leave_date
+                ])
+
+            wb.save(EXCEL_FILE)
+
+            return (
+                f"Leave applied for {requested_days} day(s). "
+                f"Remaining balance: {balance - requested_days}"
+            )
+
+    return "Employee ID not found."
 
 # Resource: Leave history
 @mcp.tool()
 def get_leave_history(employee_id: str) -> str:
-    """Get leave history for the employee"""
-    data = employee_leaves.get(employee_id)
-    if data:
-        history = ', '.join(data['history']) if data['history'] else "No leaves taken."
-        return f"Leave history for {employee_id}: {history}"
-    return "Employee ID not found."
+    wb = get_workbook()
+
+    history_sheet = wb["LeaveHistory"]
+
+    history = []
+
+    for row in history_sheet.iter_rows(min_row=2, values_only=True):
+        emp_id, leave_date = row
+
+        if emp_id == employee_id:
+            history.append(str(leave_date))
+
+    if not history:
+        return "No leave history found."
+
+    return f"Leave history for {employee_id}: {', '.join(history)}"
 
 # Resource: Greeting
 @mcp.resource("greeting://{name}")
@@ -58,4 +94,4 @@ def get_greeting(name: str) -> str:
     return f"Hello, {name}! How can I assist you with leave management today?"
 
 if __name__ == "__main__":
-    mcp.run()
+    mcp.run(transport="streamable-http")
